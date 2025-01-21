@@ -2,10 +2,12 @@ package pro.gravit.launcher.gui.service;
 
 import pro.gravit.launcher.base.Launcher;
 import pro.gravit.launcher.base.profiles.ClientProfileBuilder;
+import pro.gravit.launcher.core.hasher.HashedFile;
 import pro.gravit.launcher.gui.JavaFXApplication;
 import pro.gravit.launcher.gui.config.RuntimeSettings;
 import pro.gravit.launcher.gui.impl.AbstractStage;
 import pro.gravit.launcher.gui.impl.ContextHelper;
+import pro.gravit.launcher.gui.scenes.update.UpdateScene;
 import pro.gravit.launcher.runtime.client.ClientLauncherProcess;
 import pro.gravit.launcher.runtime.client.DirBridge;
 import pro.gravit.launcher.core.hasher.HashedDir;
@@ -16,6 +18,7 @@ import pro.gravit.launcher.base.request.auth.SetProfileRequest;
 import pro.gravit.utils.helper.*;
 
 import java.io.EOFException;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
@@ -39,8 +42,16 @@ public class LaunchService {
     }
 
     private void downloadClients(CompletableFuture<ClientInstance> future, ClientProfile profile, RuntimeSettings.ProfileSettings settings, JavaHelper.JavaVersion javaVersion, HashedDir jvmHDir) {
-        Path target = DirBridge.dirUpdates.resolve(profile.getAssetDir());
-        LogHelper.info("Start update to %s", target.toString());
+        Path assetsDir;
+        try {
+            assetsDir = DirBridge.getAppDataDir().resolve(".minecraft").resolve("assets"); // TODO
+            if(!Files.exists(assetsDir)) {
+                Files.createDirectories(assetsDir);
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        LogHelper.info("Start update to %s", assetsDir.toString());
         boolean testUpdate = isTestUpdate(profile, settings);
         Consumer<HashedDir> next = (assetHDir) -> {
             Path targetClient = DirBridge.dirUpdates.resolve(profile.getDir());
@@ -51,7 +62,7 @@ public class LaunchService {
                                                           (clientHDir) -> {
                                                               LogHelper.info("Success update");
                                                               try {
-                                                                  ClientInstance instance = doLaunchClient(target, assetHDir, targetClient,
+                                                                  ClientInstance instance = doLaunchClient(assetsDir, assetHDir, targetClient,
                                                                                  clientHDir, profile,
                                                                                  application.profilesService.getOptionalView(),
                                                                                  javaVersion, jvmHDir);
@@ -62,12 +73,14 @@ public class LaunchService {
                                                           });
         };
         if (profile.getVersion().compareTo(ClientProfileVersions.MINECRAFT_1_6_4) <= 0) {
-            application.gui.updateScene.sendUpdateRequest(profile.getAssetDir(), target,
+            application.gui.updateScene.sendUpdateRequest(profile.getAssetDir(), assetsDir,
                                                           profile.getAssetUpdateMatcher(), true, null, false, testUpdate, next);
         } else {
-            application.gui.updateScene.sendUpdateAssetRequest(profile.getAssetDir(), target,
-                                                               profile.getAssetUpdateMatcher(), true,
-                                                               profile.getAssetIndex(), testUpdate, next);
+            var matcher = profile.getAssetUpdateMatcher();
+            var assetIndex = profile.getAssetIndex();
+            application.gui.updateScene.sendUpdateAssetRequest(profile.getAssetDir(), assetsDir,
+                                                               matcher, true,
+                                                               assetIndex, testUpdate, next);
         }
     }
 
@@ -102,6 +115,12 @@ public class LaunchService {
         if(JVMHelper.OS_TYPE == JVMHelper.OS.LINUX) {
             clientLauncherProcess.params.lwjglGlfwWayland = profileSettings.waylandSupport;
         }
+
+        String assetIndexPath = "indexes/".concat(profile.getAssetIndex()).concat(".json");
+        HashedDir.FindRecursiveResult result = assetHDir.findRecursive(assetIndexPath);
+        var builder = new ClientProfileBuilder(profile);
+        builder.setAssetIndex(SecurityHelper.toHex(((HashedFile) result.entry).getDigest()));
+        profile = builder.createClientProfile();
         return new ClientInstance(clientLauncherProcess, profile, profileSettings);
     }
 

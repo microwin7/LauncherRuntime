@@ -17,6 +17,7 @@ import pro.gravit.launcher.base.profiles.optional.actions.OptionalActionFile;
 import pro.gravit.launcher.base.request.update.UpdateRequest;
 import pro.gravit.utils.helper.IOHelper;
 import pro.gravit.utils.helper.LogHelper;
+import pro.gravit.utils.helper.SecurityHelper;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -25,6 +26,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 public class VisualDownloader {
     private final JavaFXApplication application;
@@ -177,7 +179,12 @@ public class VisualDownloader {
         if (!IOHelper.exists(dir)) Files.createDirectories(dir);
         Consumer<HashedDir> downloadAssetRunnable = (assetHDir) -> {
             try {
+
                 HashedDir hashedDir = new HashedDir(dir, matcher, false, digest);
+                String assetIndexPath = "indexes/".concat(assetIndex).concat(".json");
+                HashedDir.FindRecursiveResult result = assetHDir.findRecursive(assetIndexPath);
+                String assetIndexDigest = SecurityHelper.toHex(((HashedFile) result.entry).getDigest());
+                result.parent.moveTo(assetIndex.concat(".json"), result.parent, assetIndexDigest.concat(".json"));
                 HashedDir.Diff diff = assetHDir.diff(hashedDir, matcher);
                 final List<Downloader.SizedFile> adds = getFilesList(dir, pathRemapper, diff.mismatch);
 
@@ -199,7 +206,6 @@ public class VisualDownloader {
         };
         {
             String assetIndexPath = "indexes/".concat(assetIndex).concat(".json");
-            Path localAssetIndexPath = dir.resolve(assetIndexPath);
             boolean needUpdateIndex;
             HashedDir.FindRecursiveResult result = targetHDir.findRecursive(assetIndexPath);
             if (!(result.entry instanceof HashedFile)) {
@@ -208,19 +214,22 @@ public class VisualDownloader {
                 errorHandle.accept(new RuntimeException("assetIndex not found"));
                 return;
             }
-            if (Files.exists(localAssetIndexPath)) {
-                HashedFile file = new HashedFile(localAssetIndexPath, Files.size(localAssetIndexPath), true);
+            String assetIndexDigest = SecurityHelper.toHex(((HashedFile) result.entry).getDigest());
+            String assetIndexDigestPath = "indexes/".concat(assetIndexDigest).concat(".json");
+            Path localAssetIndexDigestPath = dir.resolve(assetIndexDigestPath);
+            if (Files.exists(localAssetIndexDigestPath)) {
+                HashedFile file = new HashedFile(localAssetIndexDigestPath, Files.size(localAssetIndexDigestPath), true);
                 needUpdateIndex = !((HashedFile) result.entry).isSame(file);
             } else {
-                IOHelper.createParentDirs(localAssetIndexPath);
+                IOHelper.createParentDirs(localAssetIndexDigestPath);
                 needUpdateIndex = true;
             }
             if (needUpdateIndex) {
                 List<Downloader.SizedFile> adds = new ArrayList<>(1);
-                adds.add(new Downloader.SizedFile(assetIndexPath, ((HashedFile) result.entry).size));
+                adds.add(new Downloader.SizedFile(assetIndexPath, assetIndexDigestPath, ((HashedFile) result.entry).size));
                 downloadFiles(dir, adds, baseUrl, () -> {
                     try {
-                        AssetIndexHelper.AssetIndex index = AssetIndexHelper.parse(localAssetIndexPath);
+                        AssetIndexHelper.AssetIndex index = AssetIndexHelper.parse(localAssetIndexDigestPath);
                         AssetIndexHelper.modifyHashedDir(index, targetHDir);
                         downloadAssetRunnable.accept(targetHDir);
                     } catch (Exception e) {
@@ -230,7 +239,7 @@ public class VisualDownloader {
                 });
             } else {
                 try {
-                    AssetIndexHelper.AssetIndex index = AssetIndexHelper.parse(localAssetIndexPath);
+                    AssetIndexHelper.AssetIndex index = AssetIndexHelper.parse(localAssetIndexDigestPath);
                     AssetIndexHelper.modifyHashedDir(index, targetHDir);
                     downloadAssetRunnable.accept(targetHDir);
                 } catch (Exception e) {
